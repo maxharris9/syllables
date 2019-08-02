@@ -1,0 +1,68 @@
+service: "syllables"
+
+provider:
+  name: aws
+  # runtime: provided
+  runtime: nodejs10.x
+  memorySize: 512
+  timeout: 3
+  region: us-west-2
+  # tracing: true # enable X-Ray tracing
+  # iamRoleStatements: # add X-Ray permissions
+  #   - Effect: "Allow"
+  #     Action:
+  #       - "xray:PutTraceSegments"
+  #       - "xray:PutTelemetryRecords"
+  #     Resource:
+  #       - "*"
+
+custom:
+  username: syllables
+  password: secretpassword
+  # port: 5432
+  database: syllables
+
+functions:
+  index:
+    handler: handler.index
+    vpc:
+      securityGroupIds:
+        - sg-5fa51024
+      subnetIds:
+        - subnet-e8502a8f
+        - subnet-335ab368
+        - subnet-ae2ab7e7
+        - subnet-31ac8319
+    # layers:
+    #   - arn:aws:lambda:us-west-2:800406105498:layer:nsolid-node-10:10
+    environment:
+      # AWS_XRAY_DEBUG_MODE: true
+      # NSOLID_LICENSE_KEY:
+      POSTGRES_URL:
+        Fn::GetAtt:
+          - SqlDatabase
+          - Endpoint.Address
+      POSTGRES_PORT:
+        Fn::GetAtt:
+          - SqlDatabase
+          - Endpoint.Port
+      POSTGRES_USER: ${self:custom.username}
+      POSTGRES_PASSWORD: ${self:custom.password}
+      POSTGRES_DATABASE: ${self:custom.database}
+
+resources:
+  Resources:
+    SqlDatabase:
+      Type: AWS::RDS::DBInstance
+      Properties:
+        AllocatedStorage: 100
+        DBInstanceClass: db.t2.micro
+        Engine: postgres
+        Iops: 1000
+        MasterUsername: ${self:custom.username}
+        MasterUserPassword: ${self:custom.password}
+        DBName: ${self:custom.database}
+    # IndexLambdaFunction:
+    #   Properties:
+    #     TracingConfig:
+    #       Mode: Active # enable X-Ray tracing
