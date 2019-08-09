@@ -65,7 +65,7 @@ function read(client, word, callback) {
 }
 
 module.exports.index = function (event, context, callback) {
-  return getPlanets(callback)
+  // return getPlanets(callback)
 
   const topSegment = getTraceId(process.env._X_AMZN_TRACE_ID)
   if (!topSegment) {

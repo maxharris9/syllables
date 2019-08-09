@@ -1,50 +1,49 @@
-service: "syllables"
-
-provider:
-  name: aws
-  # runtime: provided
-  runtime: nodejs10.x
-  memorySize: 512
-  timeout: 3
-  region: us-west-2
-  # tracing: true # enable X-Ray tracing
-  # iamRoleStatements: # add X-Ray permissions
-  #   - Effect: "Allow"
-  #     Action:
-  #       - "xray:PutTraceSegments"
-  #       - "xray:PutTelemetryRecords"
-  #     Resource:
-  #       - "*"
+service: syllables
 
 custom:
   username: syllables
   password: secretpassword
   # port: 5432
   database: syllables
+  region: us-east-1
+
+provider:
+  name: aws
+  runtime: provided
+  region: ${self:custom.region}
+  memorySize: 512
+  timeout: 3
+  vpc:
+    securityGroupIds:
+      - Ref: LambdaSecurityGroup
+    subnetIds:
+      - Ref: PrivateSubnetA
+      - Ref: PrivateSubnetB
+      - Ref: PrivateSubnetC
+  tracing: true # enable X-Ray tracing
+  iamRoleStatements: # add X-Ray permissions
+    - Effect: "Allow"
+      Action:
+        - "xray:PutTraceSegments"
+        - "xray:PutTelemetryRecords"
+      Resource:
+        - "*"
 
 functions:
   index:
     handler: handler.index
-    vpc:
-      securityGroupIds:
-        - sg-5fa51024
-      subnetIds:
-        - subnet-e8502a8f
-        - subnet-335ab368
-        - subnet-ae2ab7e7
-        - subnet-31ac8319
-    # layers:
-    #   - arn:aws:lambda:us-west-2:800406105498:layer:nsolid-node-10:10
+    layers:
+      - arn:aws:lambda:${self:custom.region}:800406105498:layer:nsolid-node-10:10
     environment:
-      # AWS_XRAY_DEBUG_MODE: true
-      # NSOLID_LICENSE_KEY:
+      AWS_XRAY_DEBUG_MODE: true
+      NSOLID_LICENSE_KEY: 27abfc39-08d1-42e7-944a-fa28d9a43d63
       POSTGRES_URL:
         Fn::GetAtt:
-          - SqlDatabase
+          - PostgresDBInstance
           - Endpoint.Address
       POSTGRES_PORT:
         Fn::GetAtt:
-          - SqlDatabase
+          - PostgresDBInstance
           - Endpoint.Port
       POSTGRES_USER: ${self:custom.username}
       POSTGRES_PASSWORD: ${self:custom.password}
@@ -52,17 +51,164 @@ functions:
 
 resources:
   Resources:
-    SqlDatabase:
+    Vpc:
+      Type: AWS::EC2::VPC
+      Properties:
+        CidrBlock: 10.0.0.0/16
+    PrivateSubnetA:
+      Type: AWS::EC2::Subnet
+      Properties:
+        AvailabilityZone: ${self:custom.region}a
+        CidrBlock: 10.0.1.0/24
+        VpcId:
+          Ref: Vpc
+    PrivateSubnetB:
+      Type: AWS::EC2::Subnet
+      Properties:
+        AvailabilityZone: ${self:custom.region}b
+        CidrBlock: 10.0.2.0/24
+        VpcId:
+          Ref: Vpc
+    PrivateSubnetC:
+      Type: AWS::EC2::Subnet
+      Properties:
+        AvailabilityZone: ${self:custom.region}c
+        CidrBlock: 10.0.3.0/24
+        VpcId:
+          Ref: Vpc
+    PublicSubnetA:
+      Type: AWS::EC2::Subnet
+      Properties:
+        AvailabilityZone: ${self:custom.region}d
+        CidrBlock: 10.0.21.0/24
+        VpcId:
+          Ref: Vpc
+    LambdaSecurityGroup:
+      Type: "AWS::EC2::SecurityGroup"
+      Properties:
+        GroupDescription: Outbound traffic allowed, inbound traffic denied
+        GroupName: ${self:service}-${self:provider.stage}-lambda
+        SecurityGroupIngress:
+          - IpProtocol: -1
+            CidrIp: 127.0.0.1/32
+        VpcId:
+          Ref: Vpc
+    PostgresSecurityGroup:
+      Type: "AWS::EC2::SecurityGroup"
+      Properties:
+        GroupDescription: Outbound traffic denied, inbound traffic on 5432 allowed
+        GroupName: ${self:service}-${self:provider.stage}-db
+        SecurityGroupIngress:
+          - CidrIp: 10.0.0.0/16
+            IpProtocol: tcp
+            FromPort: 5432
+            ToPort: 5432
+        SecurityGroupEgress:
+          - IpProtocol: -1
+            CidrIp: 127.0.0.1/32
+        VpcId:
+          Ref: Vpc
+    PostgresSubnetGroup:
+      Type: "AWS::RDS::DBSubnetGroup"
+      Properties:
+        DBSubnetGroupName: ${self:service}-${self:provider.stage}
+        DBSubnetGroupDescription: Private subnet group for the database
+        SubnetIds:
+          - Ref: PrivateSubnetA
+          - Ref: PrivateSubnetB
+          - Ref: PrivateSubnetC
+    PostgresDBInstance:
       Type: AWS::RDS::DBInstance
       Properties:
-        AllocatedStorage: 100
+        AllocatedStorage: 20
+        DBInstanceIdentifier: ${self:service}-${self:provider.stage}
         DBInstanceClass: db.t2.micro
+        DBName: ${self:custom.database}
+        DBSubnetGroupName:
+          Ref: PostgresSubnetGroup
         Engine: postgres
-        Iops: 1000
+        EngineVersion: 11.2
         MasterUsername: ${self:custom.username}
         MasterUserPassword: ${self:custom.password}
-        DBName: ${self:custom.database}
-    # IndexLambdaFunction:
-    #   Properties:
-    #     TracingConfig:
-    #       Mode: Active # enable X-Ray tracing
+        VPCSecurityGroups:
+          - Ref: PostgresSecurityGroup
+    Eip:
+      Type: AWS::EC2::EIP
+      Properties:
+        Domain: vpc
+    NatGateway:
+      Type: AWS::EC2::NatGateway
+      Properties:
+        AllocationId:
+          Fn::GetAtt:
+            - Eip
+            - AllocationId
+        SubnetId:
+          Ref: PublicSubnetA
+    PrivateRouteTable:
+      Type: AWS::EC2::RouteTable
+      Properties:
+        VpcId:
+          Ref: Vpc
+    PrivateRoute:
+      Type: AWS::EC2::Route
+      Properties:
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId:
+          Ref: NatGateway
+        RouteTableId:
+          Ref: PrivateRouteTable
+    PrivateSubnetRouteTableAssociationA:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        RouteTableId:
+          Ref: PrivateRouteTable
+        SubnetId:
+          Ref: PrivateSubnetA
+    PrivateSubnetRouteTableAssociationB:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        RouteTableId:
+          Ref: PrivateRouteTable
+        SubnetId:
+          Ref: PrivateSubnetB
+    PrivateSubnetRouteTableAssociationC:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        RouteTableId:
+          Ref: PrivateRouteTable
+        SubnetId:
+          Ref: PrivateSubnetC
+    InternetGateway:
+      Type: AWS::EC2::InternetGateway
+    VPCGatewayAttachment:
+      Type: AWS::EC2::VPCGatewayAttachment
+      Properties:
+        InternetGatewayId:
+          Ref: InternetGateway
+        VpcId:
+          Ref: Vpc
+    PublicRouteTable:
+      Type: AWS::EC2::RouteTable
+      Properties:
+        VpcId:
+          Ref: Vpc
+    PublicRoute:
+      Type: AWS::EC2::Route
+      Properties:
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId:
+          Ref: InternetGateway
+        RouteTableId:
+          Ref: PublicRouteTable
+    PublicSubnetRouteTableAssociationA:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Properties:
+        RouteTableId:
+          Ref: PublicRouteTable
+        SubnetId:
+          Ref: PublicSubnetA
+    IndexLambdaFunction:
+      Properties:
+        TracingConfig:
+          Mode: Active # enable X-Ray tracing
