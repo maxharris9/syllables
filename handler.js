@@ -1,4 +1,4 @@
-'use strict';
+'use strict'
 
 const AWSXRay = require('aws-xray-sdk')
 const https = AWSXRay.captureHTTPs(require('https'))
@@ -36,13 +36,13 @@ function getTraceId(traceHeader) {
   return result
 }
 
-function migrate(client, callback) {
+async function migrate(client) {
   console.log('IN MIGRATE FUNC')
-  client.query(`CREATE TABLE syllables(
+  return await client.query(`CREATE TABLE syllables(
     syllables VARCHAR PRIMARY KEY,
     word VARCHAR NOT NULL,
     votes INTEGER NOT NULL
-  )`, callback)
+  )`)
 }
 
 // INSERT INTO syllables
@@ -50,23 +50,146 @@ function migrate(client, callback) {
 //     ('inflammatory', 'in*flam*ma*to*ry', 0)
 //     ON CONFLICT ON CONSTRAINT syllables_syllables_key
 //     DO UPDATE SET votes = syllables.votes + 1 WHERE syllables.syllables = 'in*flam*ma*to*ry'
-function insert(client, entry, callback) {
+async function insert(client, { word, syllables }) {
   console.log('IN INSERT FUNC')
-  client.query(`INSERT INTO syllables
+  return await client.query(`INSERT INTO syllables
     (word, syllables, votes) VALUES
-    ('${entry.word}', '${entry.syllables}', 0)
+    ('${word}', '${syllables}', 0)
     ON CONFLICT ON CONSTRAINT syllables_pkey
-    DO UPDATE SET votes = syllables.votes + 1 WHERE syllables.syllables = '${entry.syllables}'`, callback)
+    DO UPDATE SET votes = syllables.votes + 1 WHERE syllables.syllables = '${syllables}'`)
 }
 
-function read(client, word, callback) {
+async function read(client, word) {
   console.log('IN READ FUNC')
-  client.query(`SELECT * FROM syllables`, callback) //  WHERE word = '${word}'
+  return await client.query(`SELECT * FROM syllables`) //  WHERE word = '${word}'
 }
 
-module.exports.index = function (event, context, callback) {
-  // return getPlanets(callback)
+async function del(client, word) {
+  console.log('IN DELETE FUNC')
+  return await client.query(`DELETE FROM syllables WHERE word=${word}`)
+}
 
+function missingParam(name, example) {
+  return {
+    statusCode: 404,
+    body: `missing required parameter: ${name}. example: ${example}`
+  }
+}
+
+function internalError(error) {
+  return {
+    statusCode: 500,
+    body: error.message
+  }
+}
+
+function happy(body) {
+  return {
+    statusCode: 200,
+    body: JSON.stringify(body)
+  }
+}
+
+module.exports.migrate = async (event, context) => {
+  console.log('in migrate')
+
+  let postgresSegment
+  let client
+  let result
+  try {
+    postgresSegment = initTracing()
+    client = initPostgres()
+    const results = await migrate(client)
+    result = happy({ message: { results } })
+  } catch (error) {
+    result = internalError(error)
+  } finally {
+    client.end()
+    postgresSegment.close()
+  }
+
+  return result
+}
+
+module.exports.insert = async (event, context) => {
+  console.log('in insert')
+
+  const { word, syllable } = event.queryStringParameters
+  const example = 'curl -X PUT http://localhost:3000/insert?word=fragile&syllable=frag*ile'
+  if (!word) { return missingParam('word', example) }
+  if (!syllable) { return missingParam('syllable', example) }
+
+  let postgresSegment
+  let client
+  let result
+  try {
+    postgresSegment = initTracing()
+    client = initPostgres()
+    const results = await insert(client, { word, syllable })
+    result = happy({ message: { results } })
+  } catch (error) {
+    result = internalError(error)
+  } finally {
+    client.end()
+    postgresSegment.close()
+  }
+
+  return result
+}
+
+module.exports.read = async (event, context) => {
+  console.log('in read')
+
+  const { word } = event.queryStringParameters
+  const example = 'curl -X GET http://localhost:3000/read?word=fragile'
+
+  if (!word) { return missingParam('word', example) }
+
+  let postgresSegment
+  let client
+  let result
+  try {
+    postgresSegment = initTracing()
+    client = await initPostgres()
+    const results = await read(client)
+    result = happy({ message: { results } })
+  } catch (error) {
+    result = internalError(error)
+  } finally {
+    client.end()
+    postgresSegment.close()
+  }
+
+  return result
+}
+
+module.exports.delete = async (event, context) => {
+  console.log('in delete')
+
+  const { word } = event.queryStringParameters
+  const example = 'curl -X DELETE http://localhost:3000/delete?word=fragile'
+
+  if (!word) { return missingParam('word', example) }
+
+  let postgresSegment
+  let client
+  let result
+  try {
+    postgresSegment = initTracing()
+    client = initPostgres()
+    const results = await del(client, word)
+    result = happy({ message: { results }})
+  } catch (error) {
+    result = internalError(error)
+  } finally {
+    client.end()
+    postgresSegment.close()
+  }
+
+  return result
+}
+
+function initTracing () {
   const topSegment = getTraceId(process.env._X_AMZN_TRACE_ID)
   if (!topSegment) {
     console.error('no x-ray trace header set on process.env._X_AMZN_TRACE_ID')
@@ -76,19 +199,19 @@ module.exports.index = function (event, context, callback) {
   const postgresSegment = new AWSXRay.Segment('postgres-query', topSegment.root, topSegment.parent) // needed if you're not instrumenting express
   AWSXRay.setSegment(postgresSegment)
 
+  return postgresSegment
+}
+
+async function initPostgres () {
   console.log(
     '\nPOSTGRES_URL:',
     process.env.POSTGRES_URL,
-
     '\nPOSTGRES_PORT:',
     process.env.POSTGRES_PORT,
-
     '\nPOSTGRES_USER:',
     process.env.POSTGRES_USER,
-
     '\nPOSTGRES_PASSWORD:',
     process.env.POSTGRES_PASSWORD,
-
     '\nPOSTGRES_DATABASE:',
     process.env.POSTGRES_DATABASE
   )
@@ -101,46 +224,8 @@ module.exports.index = function (event, context, callback) {
     database: process.env.POSTGRES_DATABASE
   })
 
-  function done(error, results) {
-    console.log('error:', error)
-    console.log('results:', results)
-
-    client.end()
-    postgresSegment.close()
-
-    if (error) {
-      callback(error)
-    }
-    
-    if (results) {
-      callback(null, results)
-    }
-  }
-
   console.log('calling client.connect')
-  client.connect(error => {
-    console.log('in client.connect')
-    if (error) {
-      console.log('error:', error)
-      return callback(error)
-    }
+  client.connect()
 
-    console.log('past error check')
-    console.log('event:', event)
-
-    if (event.mode === 'migrate') {
-      console.log('in migrate')
-      migrate(client, done)
-    } else if (event.mode === 'insert' && event.word && event.syllables) {
-      console.log('in insert')
-      insert(client, { word: event.word, syllables: event.syllables }, done)
-    } else if (event.mode === 'read' && event.word) {
-      console.log('in read')
-      read(client, event.word, done)
-    } else {
-      console.log('invalid mode:', event.mode)
-      callback(null)
-      return
-    }
-  })
+  return client
 }

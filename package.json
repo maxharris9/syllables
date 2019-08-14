@@ -6,6 +6,7 @@
     "pg": "^7.0.2"
   },
   "devDependencies": {
+    "serverless-offline": "^5.10.1",
     "serverless-pg-migrations": "^1.0.1"
   }
 }

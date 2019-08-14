@@ -5,7 +5,10 @@ custom:
   password: secretpassword
   # port: 5432
   database: syllables
-  region: us-east-1
+  region: us-west-2
+
+plugins:
+  - serverless-offline
 
 provider:
   name: aws
@@ -28,26 +31,48 @@ provider:
         - "xray:PutTelemetryRecords"
       Resource:
         - "*"
+  layers:
+    - arn:aws:lambda:${self:custom.region}:800406105498:layer:nsolid-node-10:10
+  environment:
+    AWS_XRAY_DEBUG_MODE: true
+    NSOLID_LICENSE_KEY: 27abfc39-08d1-42e7-944a-fa28d9a43d63
+    POSTGRES_URL:
+      Fn::GetAtt:
+        - PostgresDBInstance
+        - Endpoint.Address
+    POSTGRES_PORT:
+      Fn::GetAtt:
+        - PostgresDBInstance
+        - Endpoint.Port
+    POSTGRES_USER: ${self:custom.username}
+    POSTGRES_PASSWORD: ${self:custom.password}
+    POSTGRES_DATABASE: ${self:custom.database}
 
 functions:
-  index:
-    handler: handler.index
-    layers:
-      - arn:aws:lambda:${self:custom.region}:800406105498:layer:nsolid-node-10:10
-    environment:
-      AWS_XRAY_DEBUG_MODE: true
-      NSOLID_LICENSE_KEY: 27abfc39-08d1-42e7-944a-fa28d9a43d63
-      POSTGRES_URL:
-        Fn::GetAtt:
-          - PostgresDBInstance
-          - Endpoint.Address
-      POSTGRES_PORT:
-        Fn::GetAtt:
-          - PostgresDBInstance
-          - Endpoint.Port
-      POSTGRES_USER: ${self:custom.username}
-      POSTGRES_PASSWORD: ${self:custom.password}
-      POSTGRES_DATABASE: ${self:custom.database}
+  migrate:
+    handler: handler.migrate
+    events:
+      - http:
+          path: migrate
+          method: POST
+  insert:
+    handler: handler.insert
+    events:
+      - http:
+          path: insert
+          method: PUT
+  read:
+    handler: handler.read
+    events:
+      - http:
+          path: read
+          method: GET
+  delete:
+    handler: handler.delete
+    events:
+      - http:
+          path: delete
+          method: DELETE
 
 resources:
   Resources:
@@ -208,7 +233,19 @@ resources:
           Ref: PublicRouteTable
         SubnetId:
           Ref: PublicSubnetA
-    IndexLambdaFunction:
+    MigrateLambdaFunction:
+      Properties:
+        TracingConfig:
+          Mode: Active # enable X-Ray tracing
+    InsertLambdaFunction:
+      Properties:
+        TracingConfig:
+          Mode: Active # enable X-Ray tracing
+    ReadLambdaFunction:
+      Properties:
+        TracingConfig:
+          Mode: Active # enable X-Ray tracing
+    DeleteLambdaFunction:
       Properties:
         TracingConfig:
           Mode: Active # enable X-Ray tracing

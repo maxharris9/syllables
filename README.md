@@ -1,5 +1,8 @@
 # nodesource-lambda-test
 
+## latest
+`sls offline --providedRuntime nodejs10.x`
+
 ## prerequisites
 
 1. `npm install -g serverless`
