@@ -1,38 +1,95 @@
-# nodesource-lambda-test
+# syllables demo
 
-## latest
-`sls offline --providedRuntime nodejs10.x`
+these are the things you need in `serverless.yml`:
 
-## prerequisites
+```
+provider:
+  tracing: true # enable X-Ray tracing
+  iamRoleStatements: # add X-Ray permissions
+    - Effect: "Allow"
+      Action:
+        - "xray:PutTraceSegments"
+        - "xray:PutTelemetryRecords"
+      Resource:
+        - "*"
+  environment:
+    AWS_XRAY_DEBUG_MODE: true
 
-1. `npm install -g serverless`
-2. if you're testing against staging, supply your NodeSource AWS account credentials (assuming that you keep them under `[default]`)
+...
 
-     `serverless config credentials --provider aws --key <key> --secret <secret>`
+    InsertLambdaFunction: # this corresponds to the name of the handler (`insert` in this example)
+      Properties:
+        TracingConfig:
+          Mode: Active # enable X-Ray tracing
+```
 
-   else if you're testing against prod, you'll need to have a separate AWS account (i.e., not your NodeSource AWS account):
+you also need a little boilerplate in your javascript to ensure that you are working with the correct root trace id:
+```
+const AWSXRay = require('aws-xray-sdk')
 
-     `serverless config credentials --provider aws --key <key> --secret <secret> --profile personal`
+// parse the root trace id
+function parseTraceHeader(traceHeader) {
+  if (!traceHeader) { return }
 
-## test against staging via your NodeSource AWS account
+  const tokens = traceHeader.split(';').filter(Boolean)
 
-1. `git clone git@github.com:nodesource/nodesource-lambda-test.git`
-2. `cd nodesource-lambda-test/`
-3. `npm install`
-4. open a browser and navigate to: https://staging.accounts.nodesource.com
-5. select `Personal` from the org selector dropdown in the upper-left
-6. copy your N|Solid license key from: https://staging.accounts.nodesource.com/settings/profile
-7. edit line 1 of `serverless.yml`, setting the service name to something unique to you, e.g.: `service: x-ray-test-max`
-   edit line 35 of `serverless.yml`, setting `NSOLID_LICENSE_KEY` to the key you copied in the previous step
-8. set the user and password in `handler.js` (ask in the qa meeting/channel for the username and password)
-9. navigate to https://staging.accounts.nodesource.com/settings/lambda and set the X-Ray Role name to `xray-read-only` (a green checkmark should confirm the setting is saved)
-10. `serverless deploy`
-11. `serverless invoke --function hello`
-12. navigate to https://staging.app.nodesource.com/functions, then select `x-ray-test-max` (for example - yours will be whatever you set in step 7) on the list on the left
-13. you should see an invocation. click on the `View` link to get to the profile/trace viewer
-14. you should see the profile and traces!
-15. navigate to https://staging.accounts.nodesource.com/settings/lambda, select the X-Ray Role name string, then hit the delete key (a green checkmark should confirm the setting is saved)
-16. repeat steps 11-13. in the profile viewer, you should see _just_ the CPU profile associated with this latest invocation
+  let result = {}
+  for (const token of tokens) {
+    const [ key, value ] = token.split('=')
+    result[key.toLowerCase()] = value
+  }
+
+  return result
+}
+
+// return the root trace id or leave an error in the logs
+function initTracing () {
+  const topSegment = parseTraceHeader(process.env._X_AMZN_TRACE_ID)
+  if (!topSegment) {
+    console.error('no x-ray trace header set on process.env._X_AMZN_TRACE_ID')
+    return
+  }
+
+  return topSegment
+}
+```
+
+finally, here's how to use the above to instrument a handler:
+```
+// instrument any services you need traces for here
+const https = AWSXRay.captureHTTPs(require('https'))
+const { Client } = AWSXRay.capturePostgres(require('pg'))
+
+function createPostgresSegment (topSegment) {
+  const postgresSegment = new AWSXRay.Segment('postgres-query', topSegment.root, topSegment.parent)
+  AWSXRay.setSegment(postgresSegment)
+  return postgresSegment
+}
+
+module.exports.insert = async (event, context) => {
+  const { word, syllable } = event.queryStringParameters
+  const example = 'curl -X PUT http://localhost:3000/insert?word=fragile&syllable=frag*ile'
+  if (!word) { return missingParam('word', example) }
+  if (!syllable) { return missingParam('syllable', example) }
+
+  let postgresSegment
+  let client
+  let result
+  try {
+    postgresSegment = createPostgresSegment(initTracing())
+    client = initPostgres()
+    const results = await insert(client, { word, syllable })
+    result = happy({ message: { results } })
+  } catch (error) {
+    result = internalError(error)
+  } finally {
+    client.end()
+    postgresSegment.close()
+  }
+
+  return result
+}
+```
 
 <!--
 ## test against prod via your personal AWS account (requires feature flag)

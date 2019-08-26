@@ -22,7 +22,7 @@ function getPlanets(callback) {
   })
 }
 
-function getTraceId(traceHeader) {
+function parseTraceHeader(traceHeader) {
   if (!traceHeader) { return }
 
   const tokens = traceHeader.split(';').filter(Boolean)
@@ -97,7 +97,7 @@ module.exports.migrate = async (event, context) => {
   let client
   let result
   try {
-    postgresSegment = initTracing()
+    postgresSegment = createPostgresSegment(initTracing())
     client = initPostgres()
     const results = await migrate(client)
     result = happy({ message: { results } })
@@ -123,7 +123,7 @@ module.exports.insert = async (event, context) => {
   let client
   let result
   try {
-    postgresSegment = initTracing()
+    postgresSegment = createPostgresSegment(initTracing())
     client = initPostgres()
     const results = await insert(client, { word, syllable })
     result = happy({ message: { results } })
@@ -149,7 +149,7 @@ module.exports.read = async (event, context) => {
   let client
   let result
   try {
-    postgresSegment = initTracing()
+    postgresSegment = createPostgresSegment(initTracing())
     client = await initPostgres()
     const results = await read(client)
     result = happy({ message: { results } })
@@ -175,7 +175,7 @@ module.exports.delete = async (event, context) => {
   let client
   let result
   try {
-    postgresSegment = initTracing()
+    postgresSegment = createPostgresSegment(initTracing())
     client = initPostgres()
     const results = await del(client, word)
     result = happy({ message: { results }})
@@ -190,15 +190,18 @@ module.exports.delete = async (event, context) => {
 }
 
 function initTracing () {
-  const topSegment = getTraceId(process.env._X_AMZN_TRACE_ID)
+  const topSegment = parseTraceHeader(process.env._X_AMZN_TRACE_ID)
   if (!topSegment) {
     console.error('no x-ray trace header set on process.env._X_AMZN_TRACE_ID')
     return
   }
 
-  const postgresSegment = new AWSXRay.Segment('postgres-query', topSegment.root, topSegment.parent) // needed if you're not instrumenting express
-  AWSXRay.setSegment(postgresSegment)
+  return topSegment
+}
 
+function createPostgresSegment (topSegment) {
+  const postgresSegment = new AWSXRay.Segment('postgres-query', topSegment.root, topSegment.parent)
+  AWSXRay.setSegment(postgresSegment)
   return postgresSegment
 }
 
