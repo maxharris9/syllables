@@ -51,7 +51,6 @@ async function migrate(client) {
 //     ON CONFLICT ON CONSTRAINT syllables_syllables_key
 //     DO UPDATE SET votes = syllables.votes + 1 WHERE syllables.syllables = 'in*flam*ma*to*ry'
 async function insert(client, { word, syllables }) {
-  console.log('IN INSERT FUNC')
   return await client.query(`INSERT INTO syllables
     (word, syllables, votes) VALUES
     ('${word}', '${syllables}', 0)
@@ -59,14 +58,16 @@ async function insert(client, { word, syllables }) {
     DO UPDATE SET votes = syllables.votes + 1 WHERE syllables.syllables = '${syllables}'`)
 }
 
+async function readSlowly(client, word) {
+  return await client.query(`SELECT * FROM syllables, pg_sleep(5) WHERE word='${word}'`)
+}
+
 async function read(client, word) {
-  console.log('IN READ FUNC')
-  return await client.query(`SELECT * FROM syllables`) //  WHERE word = '${word}'
+  return await client.query(`SELECT * FROM syllables WHERE word='${word}'`)
 }
 
 async function del(client, word) {
-  console.log('IN DELETE FUNC')
-  return await client.query(`DELETE FROM syllables WHERE word=${word}`)
+  return await client.query(`DELETE FROM syllables WHERE word='${word}'`)
 }
 
 function missingParam(name, example) {
@@ -91,16 +92,16 @@ function happy(body) {
 }
 
 module.exports.migrate = async (event, context) => {
-  console.log('in migrate')
-
+  // curl -X POST -H "x-api-key: <paste api key here>" http://localhost:3000/migrate
   let postgresSegment
   let client
   let result
   try {
     postgresSegment = createPostgresSegment(initTracing())
-    client = initPostgres()
+    client = await initPostgres()
     const results = await migrate(client)
-    result = happy({ message: { results } })
+    const message = `created syllables table`
+    result = happy({ message })
   } catch (error) {
     result = internalError(error)
   } finally {
@@ -112,21 +113,23 @@ module.exports.migrate = async (event, context) => {
 }
 
 module.exports.insert = async (event, context) => {
-  console.log('in insert')
-
-  const { word, syllable } = event.queryStringParameters
+  const { word, syllables } = event.queryStringParameters
   const example = 'curl -X PUT http://localhost:3000/insert?word=fragile&syllable=frag*ile'
   if (!word) { return missingParam('word', example) }
-  if (!syllable) { return missingParam('syllable', example) }
+  if (!syllables) { return missingParam('syllables', example) }
 
   let postgresSegment
   let client
   let result
   try {
     postgresSegment = createPostgresSegment(initTracing())
-    client = initPostgres()
-    const results = await insert(client, { word, syllable })
-    result = happy({ message: { results } })
+    console.log('postgresSegment:', postgresSegment)
+    client = await initPostgres()
+    console.log('client:', client)
+    const results = await insert(client, { word, syllables })
+    const { rowCount } = results
+    let message = `inserted ${word} with syllables ${syllables} into ${rowCount} row(s)`
+    result = happy({ message })
   } catch (error) {
     result = internalError(error)
   } finally {
@@ -138,8 +141,6 @@ module.exports.insert = async (event, context) => {
 }
 
 module.exports.read = async (event, context) => {
-  console.log('in read')
-
   const { word } = event.queryStringParameters
   const example = 'curl -X GET http://localhost:3000/read?word=fragile'
 
@@ -152,7 +153,46 @@ module.exports.read = async (event, context) => {
     postgresSegment = createPostgresSegment(initTracing())
     client = await initPostgres()
     const results = await read(client)
-    result = happy({ message: { results } })
+    let messages = []
+    for (let row of results.rows) {
+      messages.push(`word: ${row.word}, syllables: ${row.syllables} votes: ${row.votes}`)
+    }
+    const message = messages.length > 0 ? messages.join('\n') : `no syllables found for ${word}. add a new entry by curling the insert endpoint`
+    result = happy({ message })
+  } catch (error) {
+    result = internalError(error)
+  } finally {
+    client.end()
+    postgresSegment.close()
+  }
+
+  return result
+}
+
+module.exports.readWithError = async (event, context) => {
+  const { word } = event.queryStringParameters
+  const example = 'curl -X GET http://localhost:3000/read-with-error?word=fragile'
+
+  if (!word) { return missingParam('word', example) }
+
+  let postgresSegment
+  let client
+  let result
+  try {
+    postgresSegment = createPostgresSegment(initTracing())
+    client = await initPostgres()
+    const results = await readSlowly(client)
+
+    if (word === 'fragile') {
+      throw new Error(`explosions are only fun when you don't have to clean the mess up`)
+    }
+
+    let messages = []
+    for (let row of results.rows) {
+      messages.push(`word: ${row.word}, syllables: ${row.syllables} votes: ${row.votes}`)
+    }
+    const message = messages.length > 0 ? messages.join('\n') : `no syllables found for ${word}. add a new entry by curling the insert endpoint`
+    result = happy({ message })
   } catch (error) {
     result = internalError(error)
   } finally {
@@ -164,8 +204,6 @@ module.exports.read = async (event, context) => {
 }
 
 module.exports.delete = async (event, context) => {
-  console.log('in delete')
-
   const { word } = event.queryStringParameters
   const example = 'curl -X DELETE http://localhost:3000/delete?word=fragile'
 
@@ -176,9 +214,11 @@ module.exports.delete = async (event, context) => {
   let result
   try {
     postgresSegment = createPostgresSegment(initTracing())
-    client = initPostgres()
+    client = await initPostgres()
     const results = await del(client, word)
-    result = happy({ message: { results }})
+    const { rowCount } = results
+    const message = `deleted ${rowCount} from syllables table`
+    result = happy({ message })
   } catch (error) {
     result = internalError(error)
   } finally {
@@ -189,13 +229,16 @@ module.exports.delete = async (event, context) => {
   return result
 }
 
+/**
+ * workaround for the off-by-one traceId bug found and documented by Yan Cui in
+ * https://theburningmonk.com/2017/06/aws-x-ray-and-lambda-the-good-the-bad-and-the-ugly/
+ */
 function initTracing () {
   const topSegment = parseTraceHeader(process.env._X_AMZN_TRACE_ID)
   if (!topSegment) {
     console.error('no x-ray trace header set on process.env._X_AMZN_TRACE_ID')
     return
   }
-
   return topSegment
 }
 

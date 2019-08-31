@@ -13,9 +13,10 @@ plugins:
 provider:
   name: aws
   runtime: provided
+  # runtime: nodejs10.x
   region: ${self:custom.region}
   memorySize: 512
-  timeout: 3
+  timeout: 15
   vpc:
     securityGroupIds:
       - Ref: LambdaSecurityGroup
@@ -35,7 +36,7 @@ provider:
     - arn:aws:lambda:${self:custom.region}:800406105498:layer:nsolid-node-10:10
   environment:
     AWS_XRAY_DEBUG_MODE: true
-    NSOLID_LICENSE_KEY: 27abfc39-08d1-42e7-944a-fa28d9a43d63
+    NSOLID_LICENSE_KEY:
     POSTGRES_URL:
       Fn::GetAtt:
         - PostgresDBInstance
@@ -47,6 +48,8 @@ provider:
     POSTGRES_USER: ${self:custom.username}
     POSTGRES_PASSWORD: ${self:custom.password}
     POSTGRES_DATABASE: ${self:custom.database}
+  apiKeys:
+    - ${self:provider.stage}-syllables-key
 
 functions:
   migrate:
@@ -55,6 +58,7 @@ functions:
       - http:
           path: migrate
           method: POST
+          private: true
   insert:
     handler: handler.insert
     events:
@@ -67,12 +71,19 @@ functions:
       - http:
           path: read
           method: GET
+  readWithError:
+    handler: handler.readWithError
+    events:
+      - http:
+          path: read-with-error
+          method: GET
   delete:
     handler: handler.delete
     events:
       - http:
           path: delete
           method: DELETE
+          private: true
 
 resources:
   Resources:
@@ -242,6 +253,10 @@ resources:
         TracingConfig:
           Mode: Active # enable X-Ray tracing
     ReadLambdaFunction:
+      Properties:
+        TracingConfig:
+          Mode: Active # enable X-Ray tracing
+    ReadWithErrorLambdaFunction:
       Properties:
         TracingConfig:
           Mode: Active # enable X-Ray tracing

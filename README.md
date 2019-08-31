@@ -14,16 +14,20 @@ provider:
         - "*"
   environment:
     AWS_XRAY_DEBUG_MODE: true
-
+    NSOLID_LICENSE_KEY: <enter your N|Solid license key here!>
+  layers:
+    - arn:aws:lambda:${self:custom.region}:800406105498:layer:nsolid-node-10:10
 ...
-
-    InsertLambdaFunction: # this corresponds to the name of the handler (`insert` in this example)
+    # TODO: see if you can collapse this into the `provider` section!
+    InsertLambdaFunction: # this corresponds to the name of the handler (`handler.insert` in this example)
       Properties:
         TracingConfig:
           Mode: Active # enable X-Ray tracing
 ```
 
 you also need a little boilerplate in your javascript to ensure that you are working with the correct root trace id:
+
+TODO: before we ship, turn this into something we publish on npm, under an open-source license? MIT?
 ```
 const AWSXRay = require('aws-xray-sdk')
 
@@ -60,6 +64,7 @@ finally, here's how to use the above to instrument a handler:
 const https = AWSXRay.captureHTTPs(require('https'))
 const { Client } = AWSXRay.capturePostgres(require('pg'))
 
+// TODO: make certain this is absolutely necessary to set the top segment
 function createPostgresSegment (topSegment) {
   const postgresSegment = new AWSXRay.Segment('postgres-query', topSegment.root, topSegment.parent)
   AWSXRay.setSegment(postgresSegment)
@@ -90,6 +95,13 @@ module.exports.insert = async (event, context) => {
   return result
 }
 ```
+
+## run locally:
+`sls offline start -r us-west-2 --providededRuntime=nodejs10.x` # you'd think this would work, but it doesn't :(
+
+`sls offline start -r us-west-2` # I can get this running if I set `runtime: nodejs10.x`
+
+`curl -X POST -H "x-api-key: <api key>" http://localhost:3000/migrate`
 
 <!--
 ## test against prod via your personal AWS account (requires feature flag)
